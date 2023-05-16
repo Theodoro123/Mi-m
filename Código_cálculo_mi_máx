@@ -1,0 +1,229 @@
+import matplotlib.pyplot as plt
+import numpy as np
+from openpyxl import load_workbook
+from sklearn.linear_model import LinearRegression
+
+
+###############################################################
+
+def main():
+    
+    Dados = []
+
+    file = "mimaxcpoo.xlsx"
+    book = 0    
+    workbook = load_workbook(filename=file)
+    workbook.active = book
+    sheet = workbook.active 
+
+    col_max= sheet.max_column #Até qual coluna os dados serão lidos 
+    intervalo = [2,col_max] #Intervalo de dados avaliados (em colunas, o tempo)
+    time_row = 1 #Linha em que o tempo está
+    row_max = sheet.max_row #Até qual linha os dados serão lidos
+    data_row=[2,row_max] #Intervalo de dados avaliados (em linhas, poços diferentes)
+    graficos=str("s") #s para fazer gráficos, n para não fazer
+    nmin=12 #Número mínimo de pontos
+
+    for i in range(data_row[0],data_row[1]+1): #Estrutura iterativa para realizar os calculos linha a linha
+        print("row:",i)
+        dados = Analise(file,book,intervalo,time_row,i,nmin,graficos) #Chama a função "Analise", inserindo os parametros na matriz dados
+        Dados.append(dados) 
+        
+    DadosPlanilha(file,Dados,nmin,data_row) #Chama a função que insere os parametros na planilha
+    
+    return()
+
+
+###############################################################
+
+def DadosPlanilha(file,dados,nmin,data_row): #Insere os parametros calculados na planilha
+    workbook =  load_workbook(filename=file)
+    workbook.active = 0
+    sheet = workbook.active    
+  
+    for value in sheet.iter_cols(min_row=data_row[0], max_row=data_row[1], max_col=1, values_only=True):
+        title=value
+    title=np.array(title)
+    
+    workbook.create_sheet("Resultados Python", 1)
+    workbook.active = 1
+    sheet = workbook.active
+    
+    for i in range(1,len(title)+1):
+        sheet.cell(row=i+1, column=1).value = title[i-1]
+
+    sheet.cell(row=1, column = 1).value = 'Rótulo' #Nome da condição como listado na coluna 1 dos seus dados
+    sheet.cell(row=1, column = 2).value = 'mu' #Mu calculado em h^-1
+    sheet.cell(row=1, column = 3).value = 'R2' #R^2 da reta ajustada
+    sheet.cell(row=1, column = 4).value = 'Tiexp' #Tempo inicial da fase exponencial
+    sheet.cell(row=1, column = 5).value = 'Tfexp' #Tempo final da fase exponencial
+    sheet.cell(row=1, column = 6).value = 'Tfcres' #Tempo em que a curva atinge a ODmax
+    sheet.cell(row=1, column = 7).value = 'Tdesace' #Tfcres-Tfexp
+    sheet.cell(row=1, column = 8).value = 'ODmax' #OD máximas
+    sheet.cell(row=1, column = 9).value = 'N de pontos' #Número de pontos utilizado na reta da fase exponencial
+    numpontos='N min pontos' + str(nmin)
+    sheet.cell(row=1, column = 12).value = str(numpontos)
+    
+    for i in range(2,len(dados)+2): #Estrutura que imprime os dados na ordem correta
+        for j in range(2,10) :
+            sheet.cell(row=i, column=j).value = dados[i-2][j-2]
+    workbook.save(filename=file)
+    
+    return()
+
+
+###############################################################
+
+def Analise(file,book,intervalo,time_row,data_row,nmin,graficos):
+    workbook = load_workbook(filename=file)
+    workbook.active = book
+    sheet = workbook.active
+    start = False
+    end = False
+    y1 = []
+    y2 = []
+
+    for value in sheet.iter_rows(min_row=time_row, max_row=time_row, min_col=intervalo[0],max_col= intervalo[1], values_only=True):
+        x=value
+
+    for value in sheet.iter_rows(min_row=data_row, max_row=data_row, min_col=intervalo[0],max_col= intervalo[1], values_only=True):
+        y=value
+    
+    y=np.log(np.array(y))
+    x=np.array(x) #DIVIDIR POR /3600 SE O TEMPO ESTIVER EM SEGUNDOS -> x=np.array(x)/3600
+
+    grofin=np.max(y)
+    groratio=0
+    
+    for i in range(0,intervalo[1]-1):
+        groratio=grofin/y[i]
+        if groratio>=1:
+            #print(i)
+            #print(x[i])
+            fincres=x[i]
+            break
+    n = AcharStart(x,y) #Chama a função para achar o inicio da fase exponencial
+    m = AcharEnd(x,y,n) #Chama a função para achar o final da fase exponencial
+    original = Coeficientes(x,y)
+    cortada = Coeficientes(x[n:m],y[n:m])
+    a,b,c,mu,d = MelhorAjuste(x,y,m,n,nmin)
+    ##print(x[a],x[b-1],a,b-1)
+    print("velocidade específica:", mu)
+    print("R2 =", c)
+    mu = mu.tolist()
+    mu = mu[0]
+    
+    if graficos[0]=='s':
+        plt.plot(x,y,'r''.')
+        plt.plot(x[i],y[i],'m''D',label='ODmax')
+        plt.plot(x[a:b],y[a:b],'y''.',label='Pontos ajustados')
+        xa=np.linspace(0,8,8)
+        label="Reta ajustada μ="+str(round(mu, 3))
+        plt.plot(xa,mu*xa+d,'g',linewidth=0.5,label=str(label))
+        plt.xlabel("Time (h)")
+        plt.ylabel("ln(OD 540nm)")
+        plt.title(str(data_row-1)+' '+str((file[:-5])))
+        plt.legend(loc='upper right')
+        plt.savefig(str(data_row-1)+' '+str((file[:-5]))+' '+str(nmin)+' pontos.png')
+        plt.clf()
+    return(mu,c,x[a],x[b-1],fincres,fincres-x[b-1],np.exp(grofin),b-a)
+
+
+
+###############################################################
+
+def AcharStart(x,y): #Acha o início da fase exponencial
+
+    PosiçãoInicial = 1
+
+    m1 = (y[-1] - y[0]) /(x[-1] - x[0])
+
+    start = False
+
+    while start == False:
+        m2 = (y[-1] - y[PosiçãoInicial]) /(x[-1] - x[PosiçãoInicial])
+        
+        if m1 > m2:
+            start = True
+
+        else:
+            m1 = m2
+            PosiçãoInicial += len(x)//25 #Alterar este valor caso a curva não ache o Mu correto. Quanto maior, mais lento o programa irá ficar
+        
+    return(PosiçãoInicial)
+###############################################################
+
+def AcharEnd(x,y,n):
+    
+    PosiçãoFinal = len(x)-1
+
+    m1 = (y[-1] - y[n]) /(x[-1] - x[n])
+
+    start = False
+    
+    while start == False:
+        
+        m2 = (y[PosiçãoFinal] - y[n]) /(x[PosiçãoFinal] - x[n])
+        if (PosiçãoFinal-n)<len(x)//3: #Alterar este valor caso a curva não ache o Mu correto. Quanto maior, mais lento o programa irá ficar
+            start = True
+        else:
+            if m1 > m2:
+                start = True
+
+            else:
+                    m1 = m2
+                    PosiçãoFinal -= len(x)//4 #Não pode ser menor que o valor 8 linhas acima. Alterar este valor caso a curva não ache o Mu correto. Quanto maior, mais lento o programa irá ficar
+
+            
+
+            
+    return(PosiçãoFinal)
+
+###############################################################
+
+def Coeficientes(x,y):
+    
+    xr = x.reshape((-1,1))
+    
+    model = LinearRegression().fit(xr,y)
+    
+    a = model.coef_
+    b = model.intercept_
+    r = model.score(xr,y)
+    coef = [a,b,r]
+    return(coef)
+
+
+###############################################################
+
+def MelhorAjuste(x,y,m,n,nmin):
+
+    model1 = LinearRegression().fit(x[n:m].reshape((-1,1)),y[n:m])
+    r1 = model1.score(x[n:m].reshape((-1,1)),y[n:m])
+    rmax = r1
+    imax = n
+    jmax = m
+    amax = model1.coef_
+    bmax = model1.intercept_
+    BestFit = False    
+    
+    for i in range(len(x[n:m])-nmin):
+        for j in range(nmin+i,len(x[n:m])):
+            model = LinearRegression().fit(x[i:j].reshape((-1,1)),y[i:j])
+            r = model.score(x[i:j].reshape((-1,1)),y[i:j])
+            
+            if r > rmax:                                
+                imax = i
+                jmax = j
+                rmax = r
+                amax = model.coef_
+                bmax = model.intercept_
+
+               
+    
+    return(imax,jmax,rmax,amax,bmax)
+
+
+###############################################################
+main()
+
